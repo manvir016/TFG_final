@@ -1,5 +1,6 @@
 import os
 import sys
+import shutil
 
 sys.path.append(os.getcwd())
 
@@ -122,10 +123,7 @@ class TrainWrapper(TrainWrapperBaseClass):
         batch_dir = f'renders_TalkSHOW_to_Vocalist/batch_{self.global_step:05d}/'
         os.makedirs(batch_dir, exist_ok=True)
 
-        # Guardar predicciones
-        batch_npy = os.path.join(batch_dir, 'pred.npy')
-        
-
+        # Guardar predicciones por muestra
         pred_poses_np = pred_poses.detach().cpu().numpy()  # (B, T, C)
 
         k15_values = []
@@ -154,6 +152,14 @@ class TrainWrapper(TrainWrapperBaseClass):
             os.system(f'python vocalist/extract_faces.py --input {video_dir}/pred_render --output {video_dir}/lips')
             if not os.path.exists(f"{video_dir}/lips"):
                 print(f"[ERROR] Carpeta lips no generada en {video_dir}/lips")
+
+            # Copiar audio para VocaLiST
+            audio_src = bat['aud_file'][i]
+            audio_dst = os.path.join(video_dir, "lips", "audio.wav")
+            if os.path.exists(audio_src):
+                shutil.copy(audio_src, audio_dst)
+            else:
+                print(f"[WARN] No se encontró el audio {audio_src}")
 
             # 3. Vocalist test
             print(f"[INFO] Ejecutando test_lrs2_single.py...")
