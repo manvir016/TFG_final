@@ -92,7 +92,6 @@ class TrainWrapper(TrainWrapperBaseClass):
         self.pose = int(self.full_dim / round(3 * scale))
         self.each_dim = [jaw_dim, eye_dim + body_dim, hand_dim, face_dim]
 
-
     def __call__(self, bat):
         # assert (not self.args.infer), "infer mode"
         self.global_step += 1
@@ -117,59 +116,6 @@ class TrainWrapper(TrainWrapperBaseClass):
             id,
         )
 
-        #VOCALIST
-
-        batch_dir = f'renders_TalkSHOW_to_Vocalist/batch_{self.global_step:05d}/'
-        os.makedirs(batch_dir, exist_ok=True)
-
-        # Guardar predicciones
-        batch_npy = os.path.join(batch_dir, 'pred.npy')
-        
-
-        pred_poses_np = pred_poses.detach().cpu().numpy()  # (B, T, C)
-
-        k15_values = []
-
-        print(f"[INFO] Global step: {self.global_step}")
-        print(f"[INFO] pred_poses_np shape: {pred_poses_np.shape}")
-
-        for i in range(pred_poses_np.shape[0]):
-            video_dir = f"{batch_dir}/sample_{i:03d}"
-            os.makedirs(video_dir, exist_ok=True)
-
-            npy_file = os.path.join(video_dir, "pred.npy")
-            np.save(npy_file, pred_poses_np[i])  # (T, C)
-
-            print(f"[INFO] Procesando muestra {i}")
-            print(f"[INFO] Guardando pred.npy en: {npy_file}")
-
-            # 1. Render
-            print(f"[INFO] Ejecutando render...")
-            os.system(f'python scripts/demo_from_npy.py --npy_file {npy_file} --save_dir {video_dir}/pred_render')
-            if not os.path.exists(f"{video_dir}/pred_render"):
-                print(f"[ERROR] Render no generado en {video_dir}/pred_render")
-
-            # 2. Extract lips
-            print(f"[INFO] Ejecutando extract_faces...")
-            os.system(f'python vocalist/extract_faces.py --input {video_dir}/pred_render --output {video_dir}/lips')
-            if not os.path.exists(f"{video_dir}/lips"):
-                print(f"[ERROR] Carpeta lips no generada en {video_dir}/lips")
-
-            # 3. Vocalist test
-            print(f"[INFO] Ejecutando test_lrs2_single.py...")
-            os.system(f'python vocalist/test_lrs2_single.py --video_dir {video_dir}/lips --ckpt vocalist/vocalist_5f_lrs2.pth --output {video_dir}/k15.txt')
-
-            # 4. Leer k15
-            k15_path = os.path.join(video_dir, "k15.txt")
-            if os.path.exists(k15_path):
-                with open(k15_path) as f:
-                    k15 = float(f.read().strip())
-                    k15_values.append(k15)
-                    print(f"[RESULT] k15 para muestra {i}: {k15}")
-            else:
-                print(f"[ERROR] No se encontró {k15_path}")
-
-
         G_loss, G_loss_dict = self.get_loss(
             pred_poses=pred_poses,
             gt_poses=gt_poses,
@@ -178,11 +124,6 @@ class TrainWrapper(TrainWrapperBaseClass):
             gt_conf=None,
             aud=aud,
         )
-        if len(k15_values) > 0:
-            mean_k15 = sum(k15_values) / len(k15_values)
-            loss_dict["k15_loss"] = -mean_k15
-            G_loss += -mean_k15
-
 
         self.generator_optimizer.zero_grad()
         G_loss.backward()
@@ -194,8 +135,6 @@ class TrainWrapper(TrainWrapperBaseClass):
             loss_dict[key] = G_loss_dict.get(key, 0).item()
 
         return total_loss, loss_dict
-
-
 
     def get_loss(self,
                  pred_poses,

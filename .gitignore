@@ -14,7 +14,8 @@ TalkSHOW/*/*.tar.gz
 # ===============================
 TalkSHOW/**/*.pth
 TalkSHOW/experiments/
-
+vocalist/*.pth
+vocalist/videos
 # ===============================
 # === Archivos de audio pesados
 # ===============================

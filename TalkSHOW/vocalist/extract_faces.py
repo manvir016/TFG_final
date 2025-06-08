@@ -30,11 +30,11 @@ def extract_lips_from_frames(frames_dir, output_dir):
         except:
             continue  # si falla el resize
 
-        out_path = os.path.join(folder_path, f"{count}.jpg")
+        out_path = os.path.join(output_dir, f"{count}.jpg")
         cv2.imwrite(out_path, face)
         count += 1
 
-    print(f"✅ {count} caras guardadas en {video_folder}")
+    print(f"✅ {count} caras guardadas en {output_dir}")
 
 
 if __name__ == "__main__":
