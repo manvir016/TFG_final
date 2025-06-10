@@ -1,6 +1,7 @@
 import os
 import sys
 
+
 sys.path.append(os.getcwd())
 
 from nets.layers import *
@@ -11,10 +12,27 @@ from losses import KeypointLoss
 from nets.utils import denormalize
 from data_utils import get_mfcc_psf, get_mfcc_psf_min, get_mfcc_ta
 import numpy as np
+import torch
 import torch.optim as optim
 import torch.nn.functional as F
 from sklearn.preprocessing import normalize
 import smplx
+from vocalist.models.model import SyncTransformer
+from vocalist.hparams import hparams
+from torchaudio.transforms import MelScale
+from pytorch3d.renderer import (
+    FoVPerspectiveCameras,
+    MeshRasterizer,
+    MeshRenderer,
+    RasterizationSettings,
+    SoftSilhouetteShader,
+    TexturesVertex,
+)
+from pytorch3d.structures import Meshes
+import torchaudio
+
+TOP_DB = -hparams.min_level_db
+MIN_LEVEL = np.exp(TOP_DB / -20 * np.log(10))
 
 
 class TrainWrapper(TrainWrapperBaseClass):
@@ -50,6 +68,52 @@ class TrainWrapper(TrainWrapperBaseClass):
         self.am = None
 
         self.MSELoss = KeypointLoss().to(self.device)
+        # Lip-sync discriminator used for sync loss
+        self.sync_model = SyncTransformer().to(self.device)
+        # Freeze sync model parameters
+        self.sync_model.requires_grad_(False)
+
+
+        # sync network
+        self.sync_model = SyncTransformer().to(self.device)
+        if os.path.exists('vocalist/vocalist_5f_lrs2.pth'):
+            ckpt = torch.load('vocalist/vocalist_5f_lrs2.pth', map_location=self.device)
+            self.sync_model.load_state_dict(ckpt['state_dict'])
+        self.sync_model.eval()
+
+        self.vshift = hparams.v_shift
+        self.v_context = 5
+        self.melscale = MelScale(n_mels=hparams.num_mels,
+                                 sample_rate=hparams.sample_rate,
+                                 f_min=hparams.fmin,
+                                 f_max=hparams.fmax,
+                                 n_stft=hparams.n_stft,
+                                 norm='slaney',
+                                 mel_scale='slaney').to(self.device)
+
+        try:
+            model_path = os.path.join(os.path.dirname(__file__), '../visualise/smplx/SMPLX_NEUTRAL.npz')
+            model_data = np.load(model_path, allow_pickle=True)
+            self.faces = torch.tensor(model_data['f'].astype(np.int64), device=self.device)
+            cameras = FoVPerspectiveCameras(device=self.device)
+            raster = MeshRasterizer(cameras=cameras,
+                                   raster_settings=RasterizationSettings(image_size=96, faces_per_pixel=1))
+            self.renderer = MeshRenderer(rasterizer=raster,
+                                        shader=SoftSilhouetteShader(device=self.device, cameras=cameras))
+            self.smplx_model = smplx.create(model_path=os.path.dirname(model_path), model_type='smplx',
+                                           use_pca=False, create_expression=True, num_expression_coeffs=100,
+                                           create_jaw_pose=True, create_leye_pose=True, create_reye_pose=True,
+                                           create_body_pose=True, create_left_hand_pose=True,
+                                           create_right_hand_pose=True, create_global_orient=True,
+                                           create_transl=False).to(self.device)
+        except Exception:
+            self.renderer = None
+            self.faces = None
+            self.smplx_model = None
+
+
+
+
         super().__init__(args, config)
 
     def init_optimizer(self):
@@ -92,6 +156,55 @@ class TrainWrapper(TrainWrapperBaseClass):
         self.pose = int(self.full_dim / round(3 * scale))
         self.each_dim = [jaw_dim, eye_dim + body_dim, hand_dim, face_dim]
 
+
+    def audio_to_mel(self, wav_path):
+        wav, sr = torchaudio.load(wav_path)
+        if sr != hparams.sample_rate:
+            wav = torchaudio.functional.resample(wav, sr, hparams.sample_rate)
+        spec = torch.stft(wav[0], n_fft=hparams.n_fft, hop_length=hparams.hop_size,
+                          win_length=hparams.win_size,
+                          window=torch.hann_window(hparams.win_size).to(wav.device),
+                          return_complex=True)
+        melspec = self.melscale(torch.abs(spec))
+        melspec_tr1 = (20 * torch.log10(torch.clamp(melspec, min=MIN_LEVEL))) - hparams.ref_level_db
+        normalized_mel = torch.clamp((2 * hparams.max_abs_value) * ((melspec_tr1 + TOP_DB) / TOP_DB) - hparams.max_abs_value,
+                                     -hparams.max_abs_value, hparams.max_abs_value)
+        return normalized_mel.unsqueeze(0)
+
+    def render_mouth(self, params, betas):
+        if self.renderer is None or self.smplx_model is None or self.faces is None:
+            return None
+        B, T, C = params.shape
+        x = params.reshape(-1, C)
+        out = self.smplx_model(
+            betas=betas.repeat(T * B, 1),
+            expression=x[:, 165:265],
+            jaw_pose=x[:, 0:3],
+            leye_pose=x[:, 3:6],
+            reye_pose=x[:, 6:9],
+            global_orient=x[:, 9:12],
+            body_pose=x[:, 12:75],
+            left_hand_pose=x[:, 75:120],
+            right_hand_pose=x[:, 120:165],
+            return_verts=True,
+        )
+        verts = out.vertices.float()
+        textures = TexturesVertex(verts_features=torch.ones_like(verts))
+        meshes = Meshes(verts=verts, faces=self.faces.unsqueeze(0).repeat(verts.shape[0],1,1), textures=textures)
+        imgs = self.renderer(meshes)[:, :, :, :3].permute(0,3,1,2)
+        imgs = imgs.view(B, T, 3, 96, 96)
+        return imgs[:, :, :, 48:]
+
+    def calc_pdist(self, vid_feat, mel_feat, vshift=15):
+        win_size = vshift * 2 + 1
+        feat2p = F.pad(mel_feat.permute(1,2,3,0), (vshift, vshift)).permute(3,0,1,2)
+        dists = []
+        for i in range(len(vid_feat)):
+            scores = self.sync_model(vid_feat[i].unsqueeze(0).repeat(win_size,1,1,1), feat2p[i:i+win_size])
+            dists.append(scores)
+        return torch.stack(dists)
+
+
     def __call__(self, bat):
         # assert (not self.args.infer), "infer mode"
         self.global_step += 1
@@ -123,6 +236,8 @@ class TrainWrapper(TrainWrapperBaseClass):
             mode='training_G',
             gt_conf=None,
             aud=aud,
+            aud_file=bat.get('aud_file', None),
+            betas=bat.get('betas', torch.zeros([1,300], device=self.device)),
         )
 
         self.generator_optimizer.zero_grad()
@@ -136,11 +251,15 @@ class TrainWrapper(TrainWrapperBaseClass):
 
         return total_loss, loss_dict
 
+
+
     def get_loss(self,
                  pred_poses,
                  gt_poses,
                  pre_poses,
                  aud,
+                 aud_file=None,
+                 betas=None,
                  mode='training_G',
                  gt_conf=None,
                  exp=1,
@@ -151,6 +270,10 @@ class TrainWrapper(TrainWrapperBaseClass):
 
 
         [b_j, b_e, b_b, b_h, b_f] = self.dim_list
+        betas = torch.zeros(pred_poses.size(0), 10, device=self.device)
+        imgs = self.render_mouth(pred_poses, betas.to(self.device))
+        sync_out = self.sync_model(imgs, aud)
+        sync_loss = sync_out.mean()
 
         MSELoss = torch.mean(torch.abs(pred_poses[:, :, :6] - gt_poses[:, :, :6]))
         if self.expression:
@@ -158,11 +281,31 @@ class TrainWrapper(TrainWrapperBaseClass):
         else:
             expl = 0
 
-        gen_loss = expl + MSELoss
+        sync_loss = torch.tensor(0.0, device=pred_poses.device)
+        if aud_file is not None and self.renderer is not None:
+            mel = self.audio_to_mel(aud_file)
+            imgs = self.render_mouth(pred_poses.detach(), betas.to(self.device))
+            if imgs is not None:
+                lim, lcc = [], []
+                mel_step_size = 16
+                T = imgs.shape[1] - self.v_context
+                for t in range(T):
+                    lim.append(imgs[:, t:t+self.v_context].reshape(-1, self.v_context*3, 48, 96))
+                    start = int(80.0 * (t / hparams.fps))
+                    lcc.append(mel[:, :, :, start:start+mel_step_size])
+                if lim:
+                    lim = torch.cat(lim, 0)
+                    lcc = torch.cat(lcc, 0)
+                    dist = self.calc_pdist(lim, lcc, vshift=self.vshift)
+                    target = torch.full((dist.shape[0],), self.vshift, dtype=torch.long, device=dist.device)
+                    sync_loss = F.cross_entropy(dist, target)
+
+        gen_loss = expl + MSELoss + sync_loss
 
         loss_dict['MSELoss'] = MSELoss
         if self.expression:
             loss_dict['exp_loss'] = expl
+        loss_dict['sync_loss'] = sync_loss
 
         return gen_loss, loss_dict
 
