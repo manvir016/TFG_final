@@ -2,9 +2,9 @@
   "config_root_path": "/is/cluster/scratch/hyi/ExpressiveBody/SMPLifyX4/scripts",
   "dataset_load_mode": "json",
   "store_file_path": "store.pkl",
-  "smplx_npz_path": "visualise/smplx_model/SMPLX_NEUTRAL_2020.npz",
-  "extra_joint_path": "visualise/smplx_model/smplx_extra_joints.yaml",
-  "j14_regressor_path": "visualise/smplx_model/SMPLX_to_J14.pkl",
+  "smplx_npz_path": "visualise/smplx/SMPLX_NEUTRAL.npz",
+  "extra_joint_path": "visualise/smplx/smplx_extra_joints.yaml",
+  "j14_regressor_path": "visualise/smplx/SMPLX_to_J14.pkl",
   "param": {
     "w_j": 1,
     "w_b": 1,

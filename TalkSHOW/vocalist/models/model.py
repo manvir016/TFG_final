@@ -2,9 +2,8 @@ import torch
 import numpy as np
 from torch import nn
 from torch.nn import functional as F
-from models.transformer_encoder import TransformerEncoder
-from models.conv import Conv2d, Conv3d
-
+from .transformer_encoder import TransformerEncoder
+from .conv import Conv2d, Conv3d
 
 class SyncTransformer(nn.Module):
     def __init__(self, d_model=512):

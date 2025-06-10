@@ -8,7 +8,7 @@ import torch.nn.functional as F
 import cv2
 from glob import glob
 from natsort import natsorted
-from models.model import SyncTransformer
+from .models.model import SyncTransformer
 from hparams import hparams
 from torch.utils import data as data_utils
 from torchaudio.transforms import MelScale

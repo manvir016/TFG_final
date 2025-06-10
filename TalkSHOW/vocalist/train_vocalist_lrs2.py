@@ -3,7 +3,7 @@
 ####################################################
 from os.path import dirname, join, basename, isfile
 from tqdm import tqdm
-from models.model import SyncTransformer
+from .models.model import SyncTransformer
 from sklearn.metrics import f1_score
 import torch
 from torch import nn

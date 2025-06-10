@@ -3,7 +3,7 @@
 ##########################################################################################
 from os.path import dirname, join, basename, isfile
 from tqdm import tqdm
-from models.model import SyncTransformer
+from .models.model import SyncTransformer
 import torch
 import math
 from torch import nn
