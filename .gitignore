@@ -46,3 +46,7 @@ TalkSHOW/demo/style/
 # ===============================
 TalkSHOW/wandb/
 
+
+# Vim temp files
+*.swp
+*.swl

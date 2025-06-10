@@ -7,3 +7,4 @@ python scripts/demo.py \
   --face_model_path ./experiments/2025-05-11-smplx_S2G-face/ckpt-99.pth \
   --body_model_path ./experiments/2025-05-11-smplx_S2G-body-pixel2/ckpt-99.pth
 
+
