@@ -13,6 +13,13 @@ from data_utils.lower_body import count_part
 import random
 from data_utils.rotation_conversion import axis_angle_to_matrix, matrix_to_rotation_6d
 
+import random
+import librosa
+import numpy as np
+import soundfile as sf
+import uuid
+
+
 with open('data_utils/hand_component.json') as file_obj:
     comp = json.load(file_obj)
     left_hand_c = np.asarray(comp['left'])
@@ -166,60 +173,173 @@ class SmplxDataset():
     def _load_them_all(self, am, am_sr, motion_fn):
         self.loaded_data = {}
         self.complete_data = []
-        f = open(motion_fn, 'rb+')
-        data = pickle.load(f)
+        #f = open(motion_fn, 'rb+')
+        #data = pickle.load(f)
+        with open(motion_fn, 'rb') as f:
+                data = pickle.load(f)
 
-        self.betas = np.array(data['betas'])
-
-        jaw_pose = np.array(data['jaw_pose'])
-        leye_pose = np.array(data['leye_pose'])
-        reye_pose = np.array(data['reye_pose'])
-        global_orient = np.array(data['global_orient']).squeeze()
-        body_pose = np.array(data['body_pose_axis'])
-        left_hand_pose = np.array(data['left_hand_pose'])
-        right_hand_pose = np.array(data['right_hand_pose'])
-
-        full_body = np.concatenate(
-            (jaw_pose, leye_pose, reye_pose, global_orient, body_pose, left_hand_pose, right_hand_pose), axis=1)
-        assert full_body.shape[1] == 99
+        use_silence = random.random() < 0.25  # 5% of samples = silent
+        use_noise_only = not use_silence and random.random() < 0.25  # 5% = noise
 
 
-        if self.convert_to_6d:
+        if use_silence or use_noise_only:
+      
+            # Duration: random between 2 and 8 seconds
+            duration_seconds = random.uniform(2.0, 8.0)
+            sr = 16000
+            num_samples = int(sr * duration_seconds)
+
+            if use_silence:
+                print(f"[AUG] Injecting SILENT audio, duration: {duration_seconds:.2f}s")
+                speech_array = np.zeros(num_samples)
+            else:
+                noise_dir = os.path.join(os.path.dirname(__file__), '..', 'demo_audio', 'noise')
+                noise_files = [f for f in os.listdir(noise_dir) if f.endswith('.wav')]
+                
+                if noise_files:
+                    noise_file = random.choice(noise_files)
+                    noise_array, _ = librosa.load(os.path.join(noise_dir, noise_file), sr=sr)
+
+                    if len(noise_array) < num_samples:
+                        noise_array = np.tile(noise_array, int(np.ceil(num_samples / len(noise_array))))
+                    speech_array = noise_array[:num_samples]
+
+                    print(f"[AUG] Injecting NOISE-ONLY audio from '{noise_file}', duration: {duration_seconds:.2f}s")
+                else:
+                    print("[WARNING] No noise files found, defaulting to silence")
+                    speech_array = np.zeros(num_samples)
+            
+
+            unique_id = uuid.uuid4().hex[:8]
+            label = "silent" if use_silence else "noise"
+            filename = f"{label}_augmented_{unique_id}.wav"
+            debug_audio_path = os.path.join(os.path.dirname(__file__), '..', 'demo_audio', 'debug_aug_audio', filename)
+            os.makedirs(os.path.dirname(debug_audio_path), exist_ok=True)
+            sf.write(debug_audio_path, speech_array, samplerate=sr)
+            print(f"[DEBUG] Saved augmented audio: {debug_audio_path}")
+
+
+
+            self.betas = np.array(data['betas'])
+
+            # Approximate number of frames
+            bs = num_samples // (sr // self.fps)
+
+            zero_shape = (bs, 3)
+            full_body = np.concatenate([
+                np.zeros(zero_shape),  # jaw_pose
+                np.zeros(zero_shape),  # leye_pose
+                np.zeros(zero_shape),  # reye_pose
+                np.zeros(zero_shape),  # global_orient
+                np.zeros((bs, 21 * 3)),  # body_pose_axis
+                np.zeros((bs, 12 * 3)),  # left_hand_pose
+                np.zeros((bs, 12 * 3)),  # right_hand_pose
+            ], axis=1)
+
             full_body = to3d(full_body)
-            full_body = torch.from_numpy(full_body)
-            full_body = matrix_to_rotation_6d(axis_angle_to_matrix(full_body.reshape(-1, 55, 3))).reshape(-1, 330)
-            full_body = np.asarray(full_body)
+            
+            if self.convert_to_6d:
+                full_body = torch.from_numpy(full_body)
+                full_body = matrix_to_rotation_6d(axis_angle_to_matrix(full_body.reshape(-1, 55, 3))).reshape(-1, 330)
+                full_body = np.asarray(full_body)
             if self.expression:
+                full_body = np.concatenate((full_body, np.zeros((bs, 100))), axis=1)
+            self.complete_data = full_body
+
+        else:
+
+            self.betas = np.array(data['betas'])
+
+            jaw_pose = np.array(data['jaw_pose'])
+            leye_pose = np.array(data['leye_pose'])
+            reye_pose = np.array(data['reye_pose'])
+            global_orient = np.array(data['global_orient']).squeeze()
+            body_pose = np.array(data['body_pose_axis'])
+            left_hand_pose = np.array(data['left_hand_pose'])
+            right_hand_pose = np.array(data['right_hand_pose'])
+
+            full_body = np.concatenate(
+                (jaw_pose, leye_pose, reye_pose, global_orient, body_pose, left_hand_pose, right_hand_pose), axis=1)
+            assert full_body.shape[1] == 99
+
+
+            if self.convert_to_6d:
+                full_body = to3d(full_body)
+                full_body = torch.from_numpy(full_body)
+                full_body = matrix_to_rotation_6d(axis_angle_to_matrix(full_body.reshape(-1, 55, 3))).reshape(-1, 330)
+                full_body = np.asarray(full_body)
+                if self.expression:
+                    expression = np.array(data['expression'])
+                    full_body = np.concatenate((full_body, expression), axis=1)
+
+            else:
+                full_body = to3d(full_body)
                 expression = np.array(data['expression'])
                 full_body = np.concatenate((full_body, expression), axis=1)
 
-        else:
-            full_body = to3d(full_body)
-            expression = np.array(data['expression'])
-            full_body = np.concatenate((full_body, expression), axis=1)
+            self.complete_data = full_body
 
-        self.complete_data = full_body
-        self.complete_data = np.array(self.complete_data)
 
-        if self.audio_feat_win_size is not None:
-            self.audio_feat = get_mfcc_old(self.audio_fn).transpose(1, 0)
+            # Carga del audio original
+            speech_array, sampling_rate = librosa.load(self.audio_fn, sr=16000, dtype=np.float32)
+
+
+            # NUEVO: Añadir ruido dinámicamente
+            noise_prob = 0.75  # 75% de probabilidad de aplicar ruido
+            noise_dir = os.path.join(os.path.dirname(__file__), '..', 'demo_audio', 'noise')
+            noise_files = [os.path.join(noise_dir, f) for f in os.listdir(noise_dir) if f.endswith('.wav')]
+
+            if random.random() < noise_prob and len(noise_files) > 0:
+                noise_file = random.choice(noise_files)
+                noise_array, _ = librosa.load(noise_file, sr=16000)
+
+                # Ajustar longitud del ruido para coincidir con el audio original
+                if len(noise_array) < len(speech_array):
+                    repeats = int(np.ceil(len(speech_array) / len(noise_array)))
+                    noise_array = np.tile(noise_array, repeats)[:len(speech_array)]
+                else:
+                    start_idx = random.randint(0, len(noise_array) - len(speech_array))
+                    noise_array = noise_array[start_idx:start_idx + len(speech_array)]
+
+                # Añadir ruido con intensidad controlada
+                noise_level = random.uniform(0.05, 0.2)
+                speech_array = speech_array + noise_array * noise_level
+                print(f"[INFO] Ruido añadido: {os.path.basename(noise_file)} con nivel {noise_level:.2f}")
+                
+                # Ruta relativa desde data_utils hasta demo_audio/debug
+                unique_id = uuid.uuid4().hex[:8]
+                filename = f"debug_augmented_{unique_id}.wav"
+                debug_audio_path = os.path.join(os.path.dirname(__file__), '..', 'demo_audio', 'debug', filename)
+
+                # Asegúrate de que el directorio existe
+                os.makedirs(os.path.dirname(debug_audio_path), exist_ok=True)
+
+                # Guarda el audio
+                sf.write(debug_audio_path, speech_array, samplerate=16000)
+                # Normalizar audio para evitar saturación
+                max_amp = np.max(np.abs(speech_array))
+                if max_amp > 1.0:
+                    speech_array = speech_array / max_amp
+
+        # Procesar audio modificado según configuración original
+        if self.config.Model.encoder_choice == 'faceformer':
+            audio_ft = speech_array.reshape(-1, 1)
+        elif self.config.Model.encoder_choice == 'meshtalk':
+            audio_ft = 0.01 * speech_array / np.mean(np.abs(speech_array))
+        elif self.config.Model.encoder_choice == 'onset':
+            audio_ft = librosa.onset.onset_detect(y=speech_array, sr=16000, units='time').reshape(-1, 1)
         else:
-            # if self.feat_method == 'mel_spec':
-            #     self.audio_feat = get_melspec(self.audio_fn, fps=self.fps, sr=self.audio_sr, n_mels=self.audio_feat_dim)
-            # elif self.feat_method == 'mfcc':
-            self.audio_feat = get_mfcc_ta(self.audio_fn,
-                                          smlpx=True,
-                                          fps=30,
-                                          sr=self.audio_sr,
-                                          n_mfcc=self.audio_feat_dim,
-                                          win_size=self.audio_feat_win_size,
-                                          type=self.feat_method,
-                                          am=am,
-                                          am_sr=am_sr,
-                                          encoder_choice=self.config.Model.encoder_choice,
-                                          )
-            # with open(audio_file, 'w', encoding='utf-8') as file:
-            #     file.write(json.dumps(self.audio_feat.__array__().tolist(), indent=0, ensure_ascii=False))
+            audio = torch.tensor(speech_array, dtype=torch.float32).unsqueeze(0)
+            n_fft = 2048
+            hop_length = 734 if self.fps == 30 else 1467
+            mfcc_transform = ta.transforms.MFCC(
+                sample_rate=16000,
+                n_mfcc=64,
+                melkwargs={"n_fft": n_fft, "hop_length": hop_length, "n_mels": 256, "mel_scale": "htk"}
+            )
+            audio_ft = mfcc_transform(audio).squeeze(dim=0).transpose(0, 1).numpy()
+
+        self.audio_feat = audio_ft
 
     def get_dataset(self, normalization=False, normalize_stats=None, split='train'):
 
@@ -346,3 +466,5 @@ class SmplxDataset():
 
     def __len__(self):
         return len(self.img_name_list)
+
+
